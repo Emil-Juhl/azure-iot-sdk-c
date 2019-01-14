@@ -8,6 +8,7 @@
 #include "iothub_client_options.h"
 #include "iothub_client_version.h"
 #include "iothub_transport_ll.h"
+#include "iothub_client_streaming.h"
 #include "iothubtransporthttp.h"
 #include "internal/iothub_client_private.h"
 #include "internal/iothubtransport.h"
@@ -2538,6 +2539,23 @@ static int IoTHubTransportHttp_GetSupportedPlatformInfo(TRANSPORT_LL_HANDLE hand
     return result;
 }
 
+static int IoTHubTransportHttp_SetStreamRequestCallback(IOTHUB_DEVICE_HANDLE handle, DEVICE_STREAM_C2D_REQUEST_CALLBACK streamRequestCallback, void* context)
+{
+    (void)handle;
+    (void)streamRequestCallback; 
+    (void)context;
+    LogError("Device Streaming not supported.");
+    return __FAILURE__;
+}
+
+static int IoTHubTransportHttp_SendStreamResponse(IOTHUB_DEVICE_HANDLE handle, DEVICE_STREAM_C2D_RESPONSE* response)
+{
+    (void)handle;
+    (void)response;
+    LogError("Device Streaming not supported.");
+    return __FAILURE__;
+}
+
 /*Codes_SRS_TRANSPORTMULTITHTTP_17_125: [This function shall return a pointer to a structure of type TRANSPORT_PROVIDER having the following values for its fields:] */
 static TRANSPORT_PROVIDER thisTransportProvider =
 {
@@ -2557,7 +2575,9 @@ static TRANSPORT_PROVIDER thisTransportProvider =
     IoTHubTransportHttp_Subscribe,                  /*pfIoTHubTransport_Subscribe IoTHubTransport_Subscribe;*/
     IoTHubTransportHttp_Unsubscribe,                /*pfIoTHubTransport_Unsubscribe IoTHubTransport_Unsubscribe;*/
     IoTHubTransportHttp_DoWork,                     /*pfIoTHubTransport_DoWork IoTHubTransport_DoWork;*/
-    IoTHubTransportHttp_SetRetryPolicy,             /*pfIoTHubTransport_DoWork IoTHubTransport_SetRetryPolicy;*/
+    IoTHubTransportHttp_SetStreamRequestCallback,   /*pfIoTHubTransport_SetStreamRequestCallback IoTHubTransport_SetStreamRequestCallback;*/
+    IoTHubTransportHttp_SendStreamResponse,         /*pfIoTHubTransport_SendStreamResponse IoTHubTransport_SendStreamResponse;*/
+    IoTHubTransportHttp_SetRetryPolicy,             /*pfIoTHubTransport_SetRetryPolicy IoTHubTransport_SetRetryPolicy;*/
     IoTHubTransportHttp_GetSendStatus,              /*pfIoTHubTransport_GetSendStatus IoTHubTransport_GetSendStatus;*/
     IotHubTransportHttp_Subscribe_InputQueue,       /*pfIoTHubTransport_Subscribe_InputQueue IoTHubTransport_Subscribe_InputQueue; */
     IotHubTransportHttp_Unsubscribe_InputQueue,     /*pfIoTHubTransport_Unsubscribe_InputQueue IoTHubTransport_Unsubscribe_InputQueue; */
