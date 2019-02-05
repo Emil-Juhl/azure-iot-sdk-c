@@ -491,36 +491,6 @@ static STRING_HANDLE make_product_info(const char* product, PLATFORM_INFO_OPTION
     return result;
 }
 
-static void destroy_iothub_client(IOTHUB_CLIENT_CORE_LL_HANDLE_DATA* client_handle)
-{
-    if (client_handle->deviceHandle != NULL)
-    {
-        client_handle->IoTHubTransport_Unregister(client_handle->deviceHandle);
-    }
-
-    // Codes_SRS_IOTHUBCLIENT_LL_09_010: [ If any failure occurs `IoTHubClientCore_LL_Create` shall destroy the `transportHandle` only if it has created it ]
-    if (client_handle->IoTHubTransport_Destroy != NULL && !client_handle->isSharedTransport)
-    {
-        client_handle->IoTHubTransport_Destroy(client_handle->transportHandle);
-    }
-
-#ifndef DONT_USE_UPLOADTOBLOB
-    if (client_handle->uploadToBlobHandle != NULL)
-    {
-        destroy_blob_upload_module(client_handle);
-    }
-#endif // DONT_USE_UPLOADTOBLOB
-    
-    destroy_module_method_module(client_handle);
-    
-    IoTHubClient_Auth_Destroy(client_handle->authorization_module);
-
-    tickcounter_destroy(client_handle->tickCounter);
-    STRING_delete(client_handle->product_info);
-
-    free(client_handle);
-}
-
 static void IoTHubClientCore_LL_SendComplete(PDLIST_ENTRY completed, IOTHUB_CLIENT_CONFIRMATION_RESULT result, void* ctx)
 {
     /*Codes_SRS_IOTHUBCLIENT_LL_02_022: [If parameter completed is NULL, or parameter handle is NULL then IoTHubClientCore_LL_SendBatch shall return.]*/
