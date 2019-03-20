@@ -123,9 +123,9 @@ static const char DEFAULT_IOTHUB_PRODUCT_IDENTIFIER[] = CLIENT_DEVICE_TYPE_PREFI
 #define SUBSCRIBE_TELEMETRY_TOPIC               0x0004
 #define SUBSCRIBE_DEVICE_METHOD_TOPIC           0x0008
 #define SUBSCRIBE_INPUT_QUEUE_TOPIC             0x0010
-#define SUBSCRIBE_STREAMS_POST_TOPIC            0x0040
-#define SUBSCRIBE_STREAMS_RESP_TOPIC            0x0080
-#define SUBSCRIBE_TOPIC_COUNT                   5
+#define SUBSCRIBE_STREAMS_POST_TOPIC            0x0020
+#define SUBSCRIBE_STREAMS_RESP_TOPIC            0x0040
+#define SUBSCRIBE_TOPIC_COUNT                   7
 
 MU_DEFINE_ENUM_STRINGS_WITHOUT_INVALID(MQTT_CLIENT_EVENT_ERROR, MQTT_CLIENT_EVENT_ERROR_VALUES)
 
@@ -2898,14 +2898,14 @@ static int InitializeConnection(PMQTTTRANSPORT_HANDLE_DATA transport_data)
                         {
                             transport_data->topics_ToSubscribe |= SUBSCRIBE_INPUT_QUEUE_TOPIC;
                         }
-                    }
-                    if (transport_data->topic_StreamsPost != NULL)
-                    {
-                        transport_data->topics_ToSubscribe |= SUBSCRIBE_STREAMS_POST_TOPIC;
-                    }
-                    if (transport_data->topic_StreamsResp != NULL)
-                    {
-                        transport_data->topics_ToSubscribe |= SUBSCRIBE_STREAMS_RESP_TOPIC;
+                        if (transport_data->topic_StreamsPost != NULL)
+                        {
+                            transport_data->topics_ToSubscribe |= SUBSCRIBE_STREAMS_POST_TOPIC;
+                        }
+                        if (transport_data->topic_StreamsResp != NULL)
+                        {
+                            transport_data->topics_ToSubscribe |= SUBSCRIBE_STREAMS_RESP_TOPIC;
+                        }
                     }
                 }
             }

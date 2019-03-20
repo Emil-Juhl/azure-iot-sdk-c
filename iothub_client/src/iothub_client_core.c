@@ -1337,6 +1337,10 @@ void IoTHubClientCore_Destroy(IOTHUB_CLIENT_CORE_HANDLE iotHubClientHandle)
         {
             free(iotHubClientInstance->method_user_context);
         }
+        if (iotHubClientInstance->stream_user_context != NULL)
+        {
+            free(iotHubClientInstance->stream_user_context);
+        }
         free(iotHubClientInstance);
     }
 }
@@ -2785,6 +2789,7 @@ IOTHUB_CLIENT_RESULT IoTHubClientCore_SetStreamRequestCallback(IOTHUB_CLIENT_COR
                     if (iotHubClientInstance->stream_user_context == NULL)
                     {
                         LogError("Failed allocating QUEUE_CONTEXT");
+                        iotHubClientInstance->stream_user_context = previous_user_context;
                         result = IOTHUB_CLIENT_ERROR;
                     }
                     else
