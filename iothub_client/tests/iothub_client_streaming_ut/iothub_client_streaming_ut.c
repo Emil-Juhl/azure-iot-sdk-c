@@ -156,7 +156,7 @@ TEST_FUNCTION_CLEANUP(TestMethodCleanup)
 
 // Tests_SRS_IOTHUB_CLIENT_STREAMING_09_017: [ The function shall allocate memory for a new instance of DEVICE_STREAM_C2D_REQUEST (aka `clone`) ]
 // Tests_SRS_IOTHUB_CLIENT_STREAMING_09_019: [ All fields of `request` shall be copied into `clone` ]
-TEST_FUNCTION(stream_c2d_request_clone_succeeds)
+TEST_FUNCTION(IoTHubClient_StreamC2DRequestClone_succeeds)
 {
     // arrange
     DEVICE_STREAM_C2D_REQUEST* result;
@@ -175,19 +175,19 @@ TEST_FUNCTION(stream_c2d_request_clone_succeeds)
     EXPECTED_CALL(mallocAndStrcpy_s(IGNORED_NUM_ARG, IGNORED_NUM_ARG));
 
     // act
-    result = stream_c2d_request_clone(&request);
+    result = IoTHubClient_StreamC2DRequestClone(&request);
 
     // assert
     ASSERT_ARE_EQUAL(char_ptr, umock_c_get_expected_calls(), umock_c_get_actual_calls());
     ASSERT_IS_NOT_NULL(result);
 
     // cleanup
-    stream_c2d_request_destroy(result);
+    IoTHubClient_StreamC2DRequestDestroy(result);
 }
 
 // Tests_SRS_IOTHUB_CLIENT_STREAMING_09_018: [ If malloc fails, the function shall return NULL ]
 // Tests_SRS_IOTHUB_CLIENT_STREAMING_09_020: [ If any field fails to be copied, the function shall release the memory allocated and return NULL ]
-TEST_FUNCTION(stream_c2d_request_clone_negative_tests)
+TEST_FUNCTION(IoTHubClient_StreamC2DRequestClone_negative_tests)
 {
     // arrange
     DEVICE_STREAM_C2D_REQUEST request;
@@ -221,7 +221,7 @@ TEST_FUNCTION(stream_c2d_request_clone_negative_tests)
         (void)sprintf(tmp_msg, "Failed in test %zu/%zu", index, count);
 
         //act
-        result = stream_c2d_request_clone(&request);
+        result = IoTHubClient_StreamC2DRequestClone(&request);
 
         // assert
         ASSERT_IS_NULL(result, tmp_msg);
@@ -232,7 +232,7 @@ TEST_FUNCTION(stream_c2d_request_clone_negative_tests)
 }
 
 // Tests_SRS_IOTHUB_CLIENT_STREAMING_09_016: [ If `request` is NULL, the function shall return NULL ]
-TEST_FUNCTION(stream_c2d_request_clone_NULL_request)
+TEST_FUNCTION(IoTHubClient_StreamC2DRequestClone_NULL_request)
 {
     // arrange
     DEVICE_STREAM_C2D_REQUEST* result;
@@ -240,7 +240,7 @@ TEST_FUNCTION(stream_c2d_request_clone_NULL_request)
     umock_c_reset_all_calls();
 
     // act
-    result = stream_c2d_request_clone(NULL);
+    result = IoTHubClient_StreamC2DRequestClone(NULL);
 
     // assert
     ASSERT_ARE_EQUAL(char_ptr, umock_c_get_expected_calls(), umock_c_get_actual_calls());
@@ -251,7 +251,7 @@ TEST_FUNCTION(stream_c2d_request_clone_NULL_request)
 
 // Tests_SRS_IOTHUB_CLIENT_STREAMING_09_011: [ The function shall allocate memory for a new instance of DEVICE_STREAM_C2D_RESPONSE (aka `response`) ]
 // Tests_SRS_IOTHUB_CLIENT_STREAMING_09_013: [ `request->request_id` shall be copied into `response->request_id` ]
-TEST_FUNCTION(stream_c2d_response_create_succeeds)
+TEST_FUNCTION(IoTHubClient_StreamC2DResponseCreate_succeeds)
 {
     // arrange
     DEVICE_STREAM_C2D_RESPONSE* result;
@@ -267,19 +267,19 @@ TEST_FUNCTION(stream_c2d_response_create_succeeds)
     EXPECTED_CALL(mallocAndStrcpy_s(IGNORED_NUM_ARG, IGNORED_NUM_ARG));
 
     // act
-    result = stream_c2d_response_create(&request, false);
+    result = IoTHubClient_StreamC2DResponseCreate(&request, false);
 
     // assert
     ASSERT_ARE_EQUAL(char_ptr, umock_c_get_expected_calls(), umock_c_get_actual_calls());
     ASSERT_IS_NOT_NULL(result);
 
     // cleanup
-    stream_c2d_response_destroy(result);
+    IoTHubClient_StreamC2DResponseDestroy(result);
 }
 
 // Tests_SRS_IOTHUB_CLIENT_STREAMING_09_012: [ If malloc fails, the function shall return NULL ]
 // Tests_SRS_IOTHUB_CLIENT_STREAMING_09_015: [ If any values fail to be copied, the function shall release the memory allocated and return NULL ]
-TEST_FUNCTION(stream_c2d_response_create_negative_tests)
+TEST_FUNCTION(IoTHubClient_StreamC2DResponseCreate_negative_tests)
 {
     // arrange
     DEVICE_STREAM_C2D_REQUEST request;
@@ -307,7 +307,7 @@ TEST_FUNCTION(stream_c2d_response_create_negative_tests)
         (void)sprintf(tmp_msg, "Failed in test %zu/%zu", index, count);
 
         //act
-        result = stream_c2d_response_create(&request, false);
+        result = IoTHubClient_StreamC2DResponseCreate(&request, false);
 
         // assert
         ASSERT_IS_NULL(result, tmp_msg);
@@ -318,7 +318,7 @@ TEST_FUNCTION(stream_c2d_response_create_negative_tests)
 }
 
 // Tests_SRS_IOTHUB_CLIENT_STREAMING_09_010: [ If `request` is NULL, the function shall return NULL ]
-TEST_FUNCTION(stream_c2d_response_create_NULL_request)
+TEST_FUNCTION(IoTHubClient_StreamC2DResponseCreate_NULL_request)
 {
     // arrange
     DEVICE_STREAM_C2D_RESPONSE* result;
@@ -326,7 +326,7 @@ TEST_FUNCTION(stream_c2d_response_create_NULL_request)
     umock_c_reset_all_calls();
 
     // act
-    result = stream_c2d_response_create(NULL, true);
+    result = IoTHubClient_StreamC2DResponseCreate(NULL, true);
 
     // assert
     ASSERT_ARE_EQUAL(char_ptr, umock_c_get_expected_calls(), umock_c_get_actual_calls());
@@ -336,7 +336,7 @@ TEST_FUNCTION(stream_c2d_response_create_NULL_request)
 }
 
 // Tests_SRS_IOTHUB_CLIENT_STREAMING_09_024: [ The memory allocated for `request` shall be released ]
-TEST_FUNCTION(stream_c2d_request_destroy_succeeds)
+TEST_FUNCTION(IoTHubClient_StreamC2DRequestDestroy_succeeds)
 {
     // arrange
     DEVICE_STREAM_C2D_REQUEST* result;
@@ -361,7 +361,7 @@ TEST_FUNCTION(stream_c2d_request_destroy_succeeds)
     EXPECTED_CALL(free(IGNORED_PTR_ARG));
 
     // act
-    stream_c2d_request_destroy(result);
+    IoTHubClient_StreamC2DRequestDestroy(result);
 
     // assert
     ASSERT_ARE_EQUAL(char_ptr, umock_c_get_expected_calls(), umock_c_get_actual_calls());
@@ -370,13 +370,13 @@ TEST_FUNCTION(stream_c2d_request_destroy_succeeds)
 }
 
 // Tests_SRS_IOTHUB_CLIENT_STREAMING_09_023: [ If `request` is NULL, the function shall return ]
-TEST_FUNCTION(stream_c2d_request_destroy_NULL_request)
+TEST_FUNCTION(IoTHubClient_StreamC2DRequestDestroy_NULL_request)
 {
     // arrange
     umock_c_reset_all_calls();
 
     // act
-    stream_c2d_request_destroy(NULL);
+    IoTHubClient_StreamC2DRequestDestroy(NULL);
 
     // assert
     ASSERT_ARE_EQUAL(char_ptr, umock_c_get_expected_calls(), umock_c_get_actual_calls());
@@ -385,7 +385,7 @@ TEST_FUNCTION(stream_c2d_request_destroy_NULL_request)
 }
 
 // Tests_SRS_IOTHUB_CLIENT_STREAMING_09_022: [ The memory allocated for `response` shall be released ]
-TEST_FUNCTION(stream_c2d_response_destroy_succeeds)
+TEST_FUNCTION(IoTHubClient_StreamC2DResponseDestroy_succeeds)
 {
     // arrange
     DEVICE_STREAM_C2D_RESPONSE* result;
@@ -401,7 +401,7 @@ TEST_FUNCTION(stream_c2d_response_destroy_succeeds)
     EXPECTED_CALL(free(IGNORED_PTR_ARG));
 
     // act
-    stream_c2d_response_destroy(result);
+    IoTHubClient_StreamC2DResponseDestroy(result);
 
     // assert
     ASSERT_ARE_EQUAL(char_ptr, umock_c_get_expected_calls(), umock_c_get_actual_calls());
@@ -410,13 +410,13 @@ TEST_FUNCTION(stream_c2d_response_destroy_succeeds)
 }
 
 // Tests_SRS_IOTHUB_CLIENT_STREAMING_09_021: [ If `request` is NULL, the function shall return ]
-TEST_FUNCTION(stream_c2d_response_destroy_NULL_request)
+TEST_FUNCTION(IoTHubClient_StreamC2DResponseDestroy_NULL_request)
 {
     // arrange
     umock_c_reset_all_calls();
 
     // act
-    stream_c2d_response_destroy(NULL);
+    IoTHubClient_StreamC2DResponseDestroy(NULL);
 
     // assert
     ASSERT_ARE_EQUAL(char_ptr, umock_c_get_expected_calls(), umock_c_get_actual_calls());
