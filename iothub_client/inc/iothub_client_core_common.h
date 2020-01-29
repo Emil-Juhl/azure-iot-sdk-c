@@ -65,11 +65,13 @@ extern "C"
     */
     MU_DEFINE_ENUM_WITHOUT_INVALID(IOTHUB_CLIENT_STATUS, IOTHUB_CLIENT_STATUS_VALUES);
 
-#define IOTHUB_IDENTITY_TYPE_VALUE  \
-    IOTHUB_TYPE_TELEMETRY,          \
-    IOTHUB_TYPE_DEVICE_TWIN,        \
-    IOTHUB_TYPE_DEVICE_METHODS,     \
-    IOTHUB_TYPE_EVENT_QUEUE
+#define IOTHUB_IDENTITY_TYPE_VALUE      \
+    IOTHUB_TYPE_TELEMETRY,              \
+    IOTHUB_TYPE_DEVICE_TWIN,            \
+    IOTHUB_TYPE_DEVICE_METHODS,         \
+    IOTHUB_TYPE_EVENT_QUEUE,            \
+    IOTHUB_TYPE_DEVICE_STREAM_REQUEST,  \
+    IOTHUB_TYPE_DEVICE_STREAM_RESPONSE
     MU_DEFINE_ENUM_WITHOUT_INVALID(IOTHUB_IDENTITY_TYPE, IOTHUB_IDENTITY_TYPE_VALUE);
 
 #define IOTHUB_PROCESS_ITEM_RESULT_VALUE    \
@@ -128,8 +130,8 @@ extern "C"
     IOTHUB_CLIENT_CONNECTION_RETRY_EXPIRED,                \
     IOTHUB_CLIENT_CONNECTION_NO_NETWORK,                   \
     IOTHUB_CLIENT_CONNECTION_COMMUNICATION_ERROR,          \
-    IOTHUB_CLIENT_CONNECTION_NO_PING_RESPONSE,             \
-    IOTHUB_CLIENT_CONNECTION_OK                            \
+    IOTHUB_CLIENT_CONNECTION_OK,                           \
+    IOTHUB_CLIENT_CONNECTION_NO_PING_RESPONSE              \
 
     /** @brief Enumeration passed in by the IoT Hub when the connection status
     *           callback is invoked to indicate status of the connection in

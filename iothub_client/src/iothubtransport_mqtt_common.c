@@ -17,12 +17,14 @@
 #include "azure_c_shared_utility/tlsio.h"
 #include "azure_c_shared_utility/platform.h"
 #include "azure_c_shared_utility/string_tokenizer.h"
+#include "azure_c_shared_utility/string_token.h"
 #include "azure_c_shared_utility/shared_util_options.h"
 #include "azure_c_shared_utility/urlencode.h"
 
 #include "internal/iothub_client_private.h"
 #include "internal/iothub_client_retry_control.h"
 #include "internal/iothub_transport_ll_private.h"
+#include "iothub_client_streaming.h"
 #include "internal/iothubtransport_mqtt_common.h"
 #include "internal/iothubtransport.h"
 #include "internal/iothub_internal_consts.h"
@@ -73,6 +75,22 @@ static const char* TOPIC_INPUT_QUEUE_NAME = "devices/%s/modules/%s/#";
 
 static const char* TOPIC_DEVICE_METHOD_SUBSCRIBE = "$iothub/methods/POST/#";
 
+static const char* TOPIC_DEVICE_STREAMS_POST = "$iothub/streams/POST/#";
+static const char* TOPIC_DEVICE_STREAMS_RESP = "$iothub/streams/res/#";
+static const char* DEVICE_STREAM_RESPONSE_TOPIC = "$iothub/streams/res/%d/?$rid=%s";
+
+static const char* STREAM_PROPERTY_REQUEST_ID = "$rid";
+static const char* STREAM_PROPERTY_URL = "$url";
+static const char* STREAM_PROPERTY_AUTH = "$auth";
+
+#define DEVICE_STREAM_ACCEPTED    200
+#define DEVICE_STREAM_REJECTED    400
+
+#define MAX_STREAM_REQUEST_ID_SIZE    6
+
+#define MIN_DEVICE_STREAMING_NUM_OF_PARAMETERS 4
+#define MAX_DEVICE_STREAMING_NUM_OF_PARAMETERS 5
+
 static const char* PROPERTY_SEPARATOR = "&";
 static const char* REPORTED_PROPERTIES_TOPIC = "$iothub/twin/PATCH/properties/reported/?$rid=%"PRIu16;
 static const char* GET_PROPERTIES_TOPIC = "$iothub/twin/GET/?$rid=%"PRIu16;
@@ -91,6 +109,10 @@ static const char* CONNECTION_MODULE_ID_PROPERTY = "cmid";
 
 static const char* DIAGNOSTIC_CONTEXT_CREATION_TIME_UTC_PROPERTY = "creationtimeutc";
 
+static const char DT_MODEL_ID_TOKEN[] = "digital-twin-model-id";
+
+static const char DEFAULT_IOTHUB_PRODUCT_IDENTIFIER[] = CLIENT_DEVICE_TYPE_PREFIX "/" IOTHUB_SDK_VERSION;
+
 #define TOLOWER(c) (((c>='A') && (c<='Z'))?c-'A'+'a':c)
 
 #define UNSUBSCRIBE_FROM_TOPIC                  0x0000
@@ -99,7 +121,9 @@ static const char* DIAGNOSTIC_CONTEXT_CREATION_TIME_UTC_PROPERTY = "creationtime
 #define SUBSCRIBE_TELEMETRY_TOPIC               0x0004
 #define SUBSCRIBE_DEVICE_METHOD_TOPIC           0x0008
 #define SUBSCRIBE_INPUT_QUEUE_TOPIC             0x0010
-#define SUBSCRIBE_TOPIC_COUNT                   5
+#define SUBSCRIBE_STREAMS_POST_TOPIC            0x0020
+#define SUBSCRIBE_STREAMS_RESP_TOPIC            0x0040
+#define SUBSCRIBE_TOPIC_COUNT                   7
 
 MU_DEFINE_ENUM_STRINGS_WITHOUT_INVALID(MQTT_CLIENT_EVENT_ERROR, MQTT_CLIENT_EVENT_ERROR_VALUES)
 
@@ -158,8 +182,9 @@ typedef struct MQTTTRANSPORT_HANDLE_DATA_TAG
     STRING_HANDLE topic_GetState;
     STRING_HANDLE topic_NotifyState;
     STRING_HANDLE topic_InputQueue;
-
     STRING_HANDLE topic_DeviceMethods;
+    STRING_HANDLE topic_StreamsPost;
+    STRING_HANDLE topic_StreamsResp;
 
     uint32_t topics_ToSubscribe;
 
@@ -229,6 +254,9 @@ typedef struct MQTTTRANSPORT_HANDLE_DATA_TAG
     // with either SAS Token, x509 Certs, and Device SAS Token
     IOTHUB_AUTHORIZATION_HANDLE authorization_module;
 
+    DEVICE_STREAM_C2D_REQUEST_CALLBACK stream_request_callback;
+    void* stream_request_context;
+
     TRANSPORT_CALLBACKS_INFO transport_callbacks;
     void* transport_ctx;
 
@@ -236,7 +264,7 @@ typedef struct MQTTTRANSPORT_HANDLE_DATA_TAG
     int http_proxy_port;
     char* http_proxy_username;
     char* http_proxy_password;
-    bool isProductInfoSet;
+    bool isConnectUsernameSet;
     int disconnect_recv_flag;
 } MQTTTRANSPORT_HANDLE_DATA, *PMQTTTRANSPORT_HANDLE_DATA;
 
@@ -335,6 +363,8 @@ static void free_transport_handle_data(MQTTTRANSPORT_HANDLE_DATA* transport_data
     STRING_delete(transport_data->topic_NotifyState);
     STRING_delete(transport_data->topic_DeviceMethods);
     STRING_delete(transport_data->topic_InputQueue);
+    STRING_delete(transport_data->topic_StreamsPost);
+    STRING_delete(transport_data->topic_StreamsResp);
 
     DestroyXioTransport(transport_data);
 
@@ -418,6 +448,7 @@ static const char* retrieve_mqtt_return_codes(CONNECT_RETURN_CODE rtn_code)
 static int retrieve_device_method_rid_info(const char* resp_topic, STRING_HANDLE method_name, STRING_HANDLE request_id)
 {
     int result;
+
     STRING_TOKENIZER_HANDLE token_handle = STRING_TOKENIZER_create_from_char(resp_topic);
     if (token_handle == NULL)
     {
@@ -474,6 +505,7 @@ static int retrieve_device_method_rid_info(const char* resp_topic, STRING_HANDLE
         }
         STRING_TOKENIZER_destroy(token_handle);
     }
+
     return result;
 }
 
@@ -582,6 +614,14 @@ static IOTHUB_IDENTITY_TYPE retrieve_topic_type(const char* topic_resp, const ch
     else if ((input_queue != NULL) && InternStrnicmp(topic_resp, input_queue, strlen(input_queue) - 1) == 0)
     {
         type = IOTHUB_TYPE_EVENT_QUEUE;
+    }
+    else if (InternStrnicmp(topic_resp, TOPIC_DEVICE_STREAMS_POST, strlen(TOPIC_DEVICE_STREAMS_POST) - 1) == 0)
+    {
+        type = IOTHUB_TYPE_DEVICE_STREAM_REQUEST;
+    }
+    else if (InternStrnicmp(topic_resp, TOPIC_DEVICE_STREAMS_RESP, strlen(TOPIC_DEVICE_STREAMS_RESP) - 1) == 0)
+    {
+        type = IOTHUB_TYPE_DEVICE_STREAM_RESPONSE;
     }
     else
     {
@@ -1142,6 +1182,53 @@ static int publish_device_twin_message(MQTTTRANSPORT_HANDLE_DATA* transport_data
     return result;
 }
 
+static int publish_device_stream_response(MQTTTRANSPORT_HANDLE_DATA* transport_data, DEVICE_STREAM_C2D_RESPONSE* response)
+{
+    int result;
+    uint16_t packet_id = get_next_packet_id(transport_data);
+
+    STRING_HANDLE msg_topic = STRING_construct_sprintf(DEVICE_STREAM_RESPONSE_TOPIC, (response->accept ? DEVICE_STREAM_ACCEPTED : DEVICE_STREAM_REJECTED) , response->request_id);
+
+    if (msg_topic == NULL)
+    {
+        LogError("Failed constructing message topic.");
+        result = MU_FAILURE;
+    }
+    else
+    {
+        MQTT_MESSAGE_HANDLE mqtt_msg = mqttmessage_create(
+            packet_id, 
+            STRING_c_str(msg_topic), 
+            DELIVER_AT_MOST_ONCE, 
+            NULL, 
+            0);
+
+        if (mqtt_msg == NULL)
+        {
+            LogError("Failed constructing mqtt message.");
+            result = MU_FAILURE;
+        }
+        else
+        {
+            if (mqtt_client_publish(transport_data->mqttClient, mqtt_msg) != 0)
+            {
+                LogError("Failed publishing to mqtt client.");
+                result = MU_FAILURE;
+            }
+            else
+            {
+                result = 0;
+            }
+
+            mqttmessage_destroy(mqtt_msg);
+        }
+
+        STRING_delete(msg_topic);
+    }
+
+    return result;
+}
+
 static void changeStateToSubscribeIfAllowed(PMQTTTRANSPORT_HANDLE_DATA transport_data)
 {
     if (transport_data->currPacketState != CONNACK_TYPE &&
@@ -1496,6 +1583,293 @@ static int extractMqttProperties(IOTHUB_MESSAGE_HANDLE IoTHubMessage, const char
     return result;
 }
 
+static MAP_HANDLE parseTopicLevelIntoProperties(const char* topicLevel)
+{
+    MAP_HANDLE result;
+
+    if ((result = Map_Create(NULL)) == NULL)
+    {
+        LogError("Failed creating MAP_HANDLE");
+    }
+    else
+    {
+        size_t n_propDelims = 1;
+        const char* propDelims[1];
+        const char* keyValueDelims[1];
+        STRING_TOKEN_HANDLE propToken;
+
+        propDelims[0] = "&";
+        keyValueDelims[0] = "=";
+
+        if (topicLevel[0] == '?')
+        {
+            topicLevel++;
+        }
+
+        propToken = StringToken_GetFirst(topicLevel, strlen(topicLevel), propDelims, n_propDelims);
+
+        while (propToken != NULL)
+        {
+            const char* property;
+            size_t propertyLength;
+            char** keyValueSet;
+            size_t keyValueSetCount = 0;
+
+            property = StringToken_GetValue(propToken);
+            propertyLength = StringToken_GetLength(propToken);
+
+            if (StringToken_Split(property, propertyLength, keyValueDelims, 1, false, &keyValueSet, &keyValueSetCount) != 0)
+            {
+                LogError("Failed to split property key and value");
+                Map_Destroy(result);
+                result = NULL;
+                break;
+            }
+            else
+            {
+                if (keyValueSetCount != 2)
+                {
+                    LogError("Unexpected key value set count (%lu)", (unsigned long)keyValueSetCount);
+                    Map_Destroy(result);
+                    result = NULL;
+                    break;
+                }
+                else if (Map_Add(result, keyValueSet[0], keyValueSet[1]) != MAP_OK)
+                {
+                    LogError("Failed to add property key and value");
+                    Map_Destroy(result);
+                    result = NULL;
+                    break;
+                }
+
+                while (keyValueSetCount > 0)
+                {
+                    free(keyValueSet[--keyValueSetCount]);
+                }
+                free(keyValueSet);
+            }
+
+            if (!StringToken_GetNext(propToken, propDelims, n_propDelims))
+            {
+                StringToken_Destroy(propToken);
+                propToken = NULL;
+            }
+        }
+    }
+
+    return result;
+}
+
+static int parse_stream_info(MQTT_MESSAGE_HANDLE msgHandle,
+    char** request_id, char** response_code, char** name, char** url, char** authorization_token)
+{
+    int result;
+    char** topicLevels = NULL;
+    size_t level_count = 0;
+
+    if (mqttmessage_getTopicLevels(msgHandle, &topicLevels, &level_count) != 0)
+    {
+        LogError("Failed getting MQTT topic levels");
+        result = MU_FAILURE;
+    }
+    else
+    {
+        if (topicLevels == NULL || level_count < MIN_DEVICE_STREAMING_NUM_OF_PARAMETERS || level_count > MAX_DEVICE_STREAMING_NUM_OF_PARAMETERS)
+        {
+            LogError("Unexpected number of topic levels (%lu, %p)", (unsigned long)level_count, topicLevels);
+            result = MU_FAILURE;
+        }
+        else
+        {
+            char* tmp_name = NULL;
+            char* tmp_response_code = NULL;
+
+            if (name != NULL && mallocAndStrcpy_s(&tmp_name, topicLevels[3]) != 0)
+            {
+                LogError("Failed copying stream name");
+                result = MU_FAILURE;
+            }
+            else if (response_code != NULL && mallocAndStrcpy_s(&tmp_response_code, topicLevels[3]) != 0)
+            {
+                LogError("Failed copying stream response code");
+                if (tmp_name != NULL) free(tmp_name);
+                result = MU_FAILURE;
+            }
+            else
+            {
+                if (level_count == MAX_DEVICE_STREAMING_NUM_OF_PARAMETERS)
+                {
+                    MAP_HANDLE properties = parseTopicLevelIntoProperties(topicLevels[4]);
+
+                    if (properties == NULL)
+                    {
+                        LogError("Failed getting MQTT properties");
+                        free(tmp_name);
+                        result = MU_FAILURE;
+                    }
+                    else
+                    {
+                        const char* const* keys;
+                        const char* const* values;
+                        size_t prop_count;
+
+                        if (Map_GetInternals(properties, &keys, &values, &prop_count) != MAP_OK)
+                        {
+                            LogError("Failed getting properties details");
+                            free(tmp_name);
+                            result = MU_FAILURE;
+                        }
+                        else
+                        {
+                            char* tmp_request_id = NULL;
+                            char* tmp_url = NULL;
+                            char* tmp_authorization_token = NULL;
+
+                            result = 0;
+
+                            size_t i;
+                            for (i = 0; i < prop_count; i++)
+                            {
+                                if (strcmp(keys[i], STREAM_PROPERTY_REQUEST_ID) == 0)
+                                {
+                                    if (mallocAndStrcpy_s(&tmp_request_id, values[i]) != 0)
+                                    {
+                                        LogError("Failed copying stream request id");
+                                        result = MU_FAILURE;
+                                        break;
+                                    }
+                                }
+                                else if (strcmp(keys[i], STREAM_PROPERTY_URL) == 0)
+                                {
+                                    STRING_HANDLE decoded_url = URL_DecodeString(values[i]);
+
+                                    if (decoded_url == NULL)
+                                    {
+                                        LogError("Failed decoding url");
+                                        result = MU_FAILURE;
+                                        break;
+                                    }
+                                    else
+                                    {
+                                        const char* decoded_url_charptr = STRING_c_str(decoded_url);
+
+                                        if (decoded_url_charptr == NULL)
+                                        {
+                                            LogError("Failed getting the URL as a char pointer");
+                                            result = MU_FAILURE;
+                                            break;
+                                        }
+                                        else if (mallocAndStrcpy_s(&tmp_url, decoded_url_charptr) != 0)
+                                        {
+                                            LogError("Failed copying stream url");
+                                            result = MU_FAILURE;
+                                            break;
+                                        }
+
+                                        STRING_delete(decoded_url);
+                                    }
+                                }
+                                else if (strcmp(keys[i], STREAM_PROPERTY_AUTH) == 0)
+                                {
+                                    if (mallocAndStrcpy_s(&tmp_authorization_token, values[i]) != 0)
+                                    {
+                                        LogError("Failed copying stream authorization token");
+                                        result = MU_FAILURE;
+                                        break;
+                                    }
+                                }
+                            }
+
+                            if (result == 0)
+                            {
+                                if (tmp_url == NULL || tmp_authorization_token == NULL)
+                                {
+                                    LogError("Expected parameters not found (url=%p, auth_token=%p)", tmp_url, tmp_authorization_token);
+                                    result = MU_FAILURE;
+                                }
+                                else
+                                {
+                                    *request_id = tmp_request_id;
+                                    *url = tmp_url;
+                                    *authorization_token = tmp_authorization_token;
+                                }
+                            }
+                            else
+                            {
+                                if (tmp_request_id != NULL)
+                                    free(tmp_request_id);
+                                if (tmp_url != NULL)
+                                    free(tmp_url);
+                                if (tmp_authorization_token != NULL)
+                                    free(tmp_authorization_token);
+                            }
+                        }
+
+                        Map_Destroy(properties);
+                    }
+                }
+                else
+                {
+                    result = 0;
+                }
+
+                if (result == 0)
+                {
+                    if (response_code != NULL)
+                    {
+                        *response_code = tmp_response_code;
+                    }
+                    if (name != NULL)
+                    {
+                        *name = tmp_name;
+                    }
+                }
+                else
+                {
+                    free(tmp_name);
+                    free(tmp_response_code);
+                }
+            }
+        }
+
+        while (level_count > 0)
+        {
+            free(topicLevels[--level_count]);
+        }
+        free(topicLevels);
+    }
+
+    return result;
+}
+
+static DEVICE_STREAM_C2D_REQUEST* parse_stream_c2d_request(MQTT_MESSAGE_HANDLE msgHandle)
+{
+    DEVICE_STREAM_C2D_REQUEST* result;
+
+    if ((result = (DEVICE_STREAM_C2D_REQUEST*)malloc(sizeof(DEVICE_STREAM_C2D_REQUEST))) == NULL)
+    {
+        LogError("Failed allocatting STREAM request structure");
+    }
+    else
+    {
+        memset(result, 0, sizeof(DEVICE_STREAM_C2D_REQUEST));
+
+        if (parse_stream_info(msgHandle,
+            &result->request_id,
+            NULL,
+            &result->name,
+            &result->url,
+            &result->authorization_token) != 0)
+        {
+            LogError("Failed parsing the MQTT message into a stream request");
+            IoTHubClient_StreamC2DRequestDestroy(result);
+            result = NULL;
+        }
+    }
+
+    return result;
+}
+
 static void mqtt_notification_callback(MQTT_MESSAGE_HANDLE msgHandle, void* callbackCtx)
 {
     /* Tests_SRS_IOTHUB_MQTT_TRANSPORT_07_051: [ If msgHandle or callbackCtx is NULL, mqtt_notification_callback shall do nothing. ] */
@@ -1612,6 +1986,42 @@ static void mqtt_notification_callback(MQTT_MESSAGE_HANDLE msgHandle, void* call
                     }
                     STRING_delete(method_name);
                 }
+            }
+            else if (type == IOTHUB_TYPE_DEVICE_STREAM_REQUEST)
+            {
+                if (transportData->stream_request_callback != NULL)
+                {
+                    DEVICE_STREAM_C2D_REQUEST* request;
+
+                    // Codes_SRS_IOTHUB_MQTT_TRANSPORT_09_069: [ If type is IOTHUB_TYPE_DEVICE_STREAM_REQUEST, the mqtt message shall be parsed to a DEVICE_STREAM_C2D_REQUEST ]
+                    if ((request = parse_stream_c2d_request(msgHandle)) == NULL)
+                    {
+                        LogError("Failed parsing Stream request from MQTT message");
+                    }
+                    else
+                    {
+                        // Codes_SRS_IOTHUB_MQTT_TRANSPORT_09_070: [ The DEVICE_STREAM_C2D_REQUEST instance shall be passed to the upper layer through the callback set using IoTHubTransport_MQTT_Common_SetStreamRequestCallback]
+                        DEVICE_STREAM_C2D_RESPONSE* response = transportData->stream_request_callback(request, transportData->stream_request_context);
+
+                        if (response != NULL)
+                        {
+                            // Codes_SRS_IOTHUB_MQTT_TRANSPORT_09_071: [ If a response is provided by the callback invokation, it shall be published to "$iothub/streams/res/`response_code`/?$rid=`response->request_id`" ]
+                            // Codes_SRS_IOTHUB_MQTT_TRANSPORT_09_072: [ If `response->accept` is TRUE, `response_code` shall be set as "200", otherwise it shall be "400" ]
+                            if (publish_device_stream_response(transportData, response) != 0)
+                            {
+                                LogError("Failed sending response for Stream request");
+                            }
+
+                            IoTHubClient_StreamC2DResponseDestroy(response);
+                        }
+
+                        IoTHubClient_StreamC2DRequestDestroy(request);
+                    }
+                }
+            }
+            else if (type == IOTHUB_TYPE_DEVICE_STREAM_RESPONSE)
+            {
+                LogError("Unexpected topic type (%d)", type);
             }
             else
             {
@@ -1921,6 +2331,14 @@ static void mqtt_error_callback(MQTT_CLIENT_HANDLE handle, MQTT_CLIENT_EVENT_ERR
         {
             transport_data->topics_ToSubscribe |= SUBSCRIBE_INPUT_QUEUE_TOPIC;
         }
+        if (transport_data->topic_StreamsPost != NULL)
+        {
+            transport_data->topics_ToSubscribe |= SUBSCRIBE_STREAMS_POST_TOPIC;
+        }
+        if (transport_data->topic_StreamsResp != NULL)
+        {
+            transport_data->topics_ToSubscribe |= SUBSCRIBE_STREAMS_RESP_TOPIC;
+        }
     }
     else
     {
@@ -1970,6 +2388,20 @@ static void SubscribeToMqttProtocol(PMQTTTRANSPORT_HANDLE_DATA transport_data)
             subscribe[subscribe_count].subscribeTopic = STRING_c_str(transport_data->topic_InputQueue);
             subscribe[subscribe_count].qosReturn = DELIVER_AT_MOST_ONCE;
             topic_subscription |= SUBSCRIBE_INPUT_QUEUE_TOPIC;
+            subscribe_count++;
+        }
+        if ((transport_data->topic_StreamsPost != NULL) && (SUBSCRIBE_STREAMS_POST_TOPIC & transport_data->topics_ToSubscribe))
+        {
+            subscribe[subscribe_count].subscribeTopic = STRING_c_str(transport_data->topic_StreamsPost);
+            subscribe[subscribe_count].qosReturn = DELIVER_AT_MOST_ONCE;
+            topic_subscription |= SUBSCRIBE_STREAMS_POST_TOPIC;
+            subscribe_count++;
+        }
+        if ((transport_data->topic_StreamsResp != NULL) && (SUBSCRIBE_STREAMS_RESP_TOPIC & transport_data->topics_ToSubscribe))
+        {
+            subscribe[subscribe_count].subscribeTopic = STRING_c_str(transport_data->topic_StreamsResp);
+            subscribe[subscribe_count].qosReturn = DELIVER_AT_MOST_ONCE;
+            topic_subscription |= SUBSCRIBE_STREAMS_RESP_TOPIC;
             subscribe_count++;
         }
 
@@ -2172,6 +2604,81 @@ static STRING_HANDLE buildClientId(const char* device_id, const char* module_id)
     }
 }
 
+static int buildConfigForUsernameStep2IfNeeded(PMQTTTRANSPORT_HANDLE_DATA transport_data)
+{
+    int result;
+
+    if (!transport_data->isConnectUsernameSet)
+    {
+        STRING_HANDLE userName = NULL;
+        STRING_HANDLE modelIdParameter = NULL;
+        STRING_HANDLE urlEncodedModelId = NULL;
+        const char* modelId = transport_data->transport_callbacks.get_model_id_cb(transport_data->transport_ctx);
+        // TODO: The preview API version in SDK is only scoped to scenarios that require the modelId to be set.
+        // https://github.com/Azure/azure-iot-sdk-c/issues/1547 tracks removing this once non-preview API versions support modelId.
+        const char* apiVersion = (modelId != NULL) ? IOTHUB_API_PREVIEW_VERSION : IOTHUB_API_VERSION;
+        const char* appSpecifiedProductInfo = transport_data->transport_callbacks.prod_info_cb(transport_data->transport_ctx);
+        STRING_HANDLE productInfoEncoded = NULL; 
+
+        if ((productInfoEncoded = URL_EncodeString((appSpecifiedProductInfo != NULL) ? appSpecifiedProductInfo : DEFAULT_IOTHUB_PRODUCT_IDENTIFIER)) == NULL)
+        {
+            LogError("Unable to UrlEncode productInfo");
+            result = MU_FAILURE;
+        }
+        else if ((userName = STRING_construct_sprintf("%s?api-version=%s&DeviceClientType=%s", STRING_c_str(transport_data->configPassedThroughUsername), apiVersion, STRING_c_str(productInfoEncoded))) == NULL)
+        {
+            LogError("Failed constructing string");
+            result = 0;
+        }
+        else if (modelId != NULL)
+        {
+            if ((urlEncodedModelId = URL_EncodeString(modelId)) == NULL)
+            {
+                LogError("Failed to URL encode the modelID string");
+                result = MU_FAILURE;
+            }
+            else if ((modelIdParameter = STRING_construct_sprintf("&%s=%s", DT_MODEL_ID_TOKEN, STRING_c_str(urlEncodedModelId))) == NULL)
+            {
+                LogError("Cannot build modelID string");
+                result = MU_FAILURE;
+            }
+            else if (STRING_concat_with_STRING(userName, modelIdParameter) != 0)
+            {
+                LogError("Failed to set modelID parameter in connect");
+                result = MU_FAILURE;
+            }
+            else
+            {
+                result = 0;
+            }
+        }
+        else
+        {
+            result = 0;
+        }
+
+        if (result == 0)
+        {
+            STRING_delete(transport_data->configPassedThroughUsername);
+            transport_data->configPassedThroughUsername = userName;
+            userName = NULL;
+            // setting connect string is only allowed once in the lifetime of the device client.
+            transport_data->isConnectUsernameSet = true;
+        }
+
+        STRING_delete(userName);
+        STRING_delete(modelIdParameter);
+        STRING_delete(urlEncodedModelId);
+        STRING_delete(productInfoEncoded);
+    }
+    else
+    {
+        result = 0;
+    }
+
+    return result;
+}
+
 static int SendMqttConnectMsg(PMQTTTRANSPORT_HANDLE_DATA transport_data)
 {
     int result;
@@ -2215,47 +2722,13 @@ static int SendMqttConnectMsg(PMQTTTRANSPORT_HANDLE_DATA transport_data)
 
     if (result == 0)
     {
-        if (!transport_data->isProductInfoSet)
-        {
-            // This requires the iothubClientHandle, which sadly the MQTT transport only gets on DoWork, so this code still needs to remain here.
-            // The correct place for this would be in the Create method, but we don't get the client handle there.
-            // Also, when device multiplexing is used, the customer creates the transport directly and explicitly, when the client is still not created.
-            // This will be a major hurdle when we add device multiplexing to MQTT transport.
-
-            STRING_HANDLE clone;
-            const char* product_info = transport_data->transport_callbacks.prod_info_cb(transport_data->transport_ctx);
-            if (product_info == NULL)
-            {
-                clone = STRING_construct_sprintf("%s%%2F%s", CLIENT_DEVICE_TYPE_PREFIX, IOTHUB_SDK_VERSION);
-            }
-            else
-            {
-                clone = URL_EncodeString(product_info);
-            }
-
-            if (clone == NULL)
-            {
-                LogError("Failed obtaining the product info");
-            }
-            else
-            {
-                if (STRING_concat_with_STRING(transport_data->configPassedThroughUsername, clone) != 0)
-                {
-                    LogError("Failed concatenating the product info");
-                }
-                else
-                {
-                    transport_data->isProductInfoSet = true;
-                }
-
-                STRING_delete(clone);
-            }
-        }
-
         STRING_HANDLE clientId;
-
-        clientId = buildClientId(STRING_c_str(transport_data->device_id), STRING_c_str(transport_data->module_id));
-        if (NULL == clientId)
+        if (buildConfigForUsernameStep2IfNeeded(transport_data) != 0)
+        {
+            LogError("Failed to add optional connect parameters.");
+            result = MU_FAILURE;
+        }
+        else if ((clientId = buildClientId(STRING_c_str(transport_data->device_id), STRING_c_str(transport_data->module_id))) == NULL)
         {
             LogError("Unable to allocate clientId");
             result = MU_FAILURE;
@@ -2301,7 +2774,6 @@ static int SendMqttConnectMsg(PMQTTTRANSPORT_HANDLE_DATA transport_data)
             }
             STRING_delete(clientId);
         }
-
     }
     return result;
 }
@@ -2424,6 +2896,14 @@ static int InitializeConnection(PMQTTTRANSPORT_HANDLE_DATA transport_data)
                         {
                             transport_data->topics_ToSubscribe |= SUBSCRIBE_INPUT_QUEUE_TOPIC;
                         }
+                        if (transport_data->topic_StreamsPost != NULL)
+                        {
+                            transport_data->topics_ToSubscribe |= SUBSCRIBE_STREAMS_POST_TOPIC;
+                        }
+                        if (transport_data->topic_StreamsResp != NULL)
+                        {
+                            transport_data->topics_ToSubscribe |= SUBSCRIBE_STREAMS_RESP_TOPIC;
+                        }
                     }
                 }
             }
@@ -2432,15 +2912,18 @@ static int InitializeConnection(PMQTTTRANSPORT_HANDLE_DATA transport_data)
     return result;
 }
 
-static STRING_HANDLE buildConfigForUsername(const IOTHUB_CLIENT_CONFIG* upperConfig, const char* moduleId)
+// At handle creation time, we don't have all the fields required for building up the user name (e.g. productID)
+// We build up as much of the string as we can at this point because we do not store upperConfig after initialization.
+// In buildConfigForUsernameStep2IfNeeded, only immediately before we do CONNECT itself, do we complete building up this string.
+static STRING_HANDLE buildConfigForUsernameStep1(const IOTHUB_CLIENT_CONFIG* upperConfig, const char* moduleId)
 {
     if (moduleId == NULL)
     {
-        return STRING_construct_sprintf("%s.%s/%s/?api-version=%s&DeviceClientType=", upperConfig->iotHubName, upperConfig->iotHubSuffix, upperConfig->deviceId, IOTHUB_API_VERSION);
+        return STRING_construct_sprintf("%s.%s/%s/", upperConfig->iotHubName, upperConfig->iotHubSuffix, upperConfig->deviceId);
     }
     else
     {
-        return STRING_construct_sprintf("%s.%s/%s/%s/?api-version=%s&DeviceClientType=", upperConfig->iotHubName, upperConfig->iotHubSuffix, upperConfig->deviceId, moduleId, IOTHUB_API_VERSION);
+        return STRING_construct_sprintf("%s.%s/%s/%s/", upperConfig->iotHubName, upperConfig->iotHubSuffix, upperConfig->deviceId, moduleId);
     }
 }
 
@@ -2528,7 +3011,7 @@ static PMQTTTRANSPORT_HANDLE_DATA InitializeTransportHandleData(const IOTHUB_CLI
                 }
                 else
                 {
-                    /* Codes_SRS_IOTHUB_MQTT_TRANSPORT_07_008: [If the upperConfig contains a valid protocolGatewayHostName value the this shall be used for the hostname, otherwise the hostname shall be constructed using the iothubname and iothubSuffix.] */
+                    /* Codes_SRS_IOTHUB_MQTT_TRANSPORT_07_008: [If the upperConfig contains a valid protocolGatewayHostName value this shall be used for the hostname, otherwise the hostname shall be constructed using the iothubName and iothubSuffix.] */
                     if (upperConfig->protocolGatewayHostName == NULL)
                     {
                         state->hostAddress = STRING_construct_sprintf("%s.%s", upperConfig->iotHubName, upperConfig->iotHubSuffix);
@@ -2544,7 +3027,7 @@ static PMQTTTRANSPORT_HANDLE_DATA InitializeTransportHandleData(const IOTHUB_CLI
                         free_transport_handle_data(state);
                         state = NULL;
                     }
-                    else if ((state->configPassedThroughUsername = buildConfigForUsername(upperConfig, moduleId)) == NULL)
+                    else if ((state->configPassedThroughUsername = buildConfigForUsernameStep1(upperConfig, moduleId)) == NULL)
                     {
                         free_transport_handle_data(state);
                         state = NULL;
@@ -2580,7 +3063,7 @@ static PMQTTTRANSPORT_HANDLE_DATA InitializeTransportHandleData(const IOTHUB_CLI
                         state->topic_DeviceMethods = NULL;
                         state->topic_InputQueue = NULL;
                         state->log_trace = state->raw_trace = false;
-                        state->isProductInfoSet = false;
+                        state->isConnectUsernameSet = false;
                         state->auto_url_encode_decode = false;
                         state->conn_attempted = false;
                     }
@@ -3297,6 +3780,18 @@ IOTHUB_CLIENT_RESULT IoTHubTransport_MQTT_Common_SetOption(TRANSPORT_LL_HANDLE h
                 result = IOTHUB_CLIENT_OK;
             }
         }
+        else if (strcmp(OPTION_RETRY_MAX_DELAY_SECS, option) == 0)
+        {
+            if (retry_control_set_option(transport_data->retry_control_handle, RETRY_CONTROL_OPTION_MAX_DELAY_IN_SECS, value) != 0)
+            {
+                LogError("Failure setting retry max delay option");
+                result = IOTHUB_CLIENT_ERROR;
+            }
+            else
+            {
+                result = IOTHUB_CLIENT_OK;
+            }
+        }
         else if (strcmp(OPTION_HTTP_PROXY, option) == 0)
         {
             /* Codes_SRS_IOTHUB_TRANSPORT_MQTT_COMMON_01_001: [ If `option` is `proxy_data`, `value` shall be used as an `HTTP_PROXY_OPTIONS*`. ]*/
@@ -3598,6 +4093,138 @@ void IoTHubTransport_MQTT_Common_Unsubscribe_InputQueue(TRANSPORT_LL_HANDLE hand
         // Codes_SRS_IOTHUB_TRANSPORT_MQTT_COMMON_31_071: [ If parameter handle is NULL then IoTHubTransport_MQTT_Common_Unsubscribe_InputQueue shall do nothing.]
         LogError("Invalid argument to unsubscribe input queue (NULL).");
     }
+}
+
+int IoTHubTransport_MQTT_Common_SetStreamRequestCallback(IOTHUB_DEVICE_HANDLE handle, DEVICE_STREAM_C2D_REQUEST_CALLBACK streamRequestCallback, void* context)
+{
+    int result;
+
+    // Codes_SRS_IOTHUB_TRANSPORT_MQTT_COMMON_09_046: [ If `handle` is NULL, IoTHubTransport_MQTT_Common_SetStreamRequestCallback shall return a non-zero value (failure) ]
+    if (handle == NULL)
+    {
+        LogError("Invalid handle parameter. NULL.");
+        result = MU_FAILURE;
+    }
+    else
+    {
+        PMQTTTRANSPORT_HANDLE_DATA transport_data = (PMQTTTRANSPORT_HANDLE_DATA)handle;
+
+        if (streamRequestCallback != NULL)
+        {
+            DEVICE_STREAM_C2D_REQUEST_CALLBACK previous_callback = transport_data->stream_request_callback;
+            void* previous_context = transport_data->stream_request_context;
+
+            transport_data->stream_request_callback = streamRequestCallback;
+            transport_data->stream_request_context = context;
+
+            if (transport_data->topics_ToSubscribe & SUBSCRIBE_STREAMS_POST_TOPIC)
+            {
+                // Is already subscribed; no need to resubscribe.
+                result = 0;
+            }
+            else
+            {
+                // Codes_SRS_IOTHUB_TRANSPORT_MQTT_COMMON_09_047: [ The transport shall subscribe for messages from topic $iothub/streams/POST/ ]
+                if ((transport_data->topic_StreamsPost = STRING_construct(TOPIC_DEVICE_STREAMS_POST)) == NULL)
+                {
+                    LogError("Failure constructing Stream POST Topic");
+                    transport_data->stream_request_callback = previous_callback;
+                    transport_data->stream_request_context = previous_context;
+
+                    // Codes_SRS_IOTHUB_TRANSPORT_MQTT_COMMON_09_048: [ If topic subscription fails, the function shall return a non-zero value (failure) ]
+                    result = MU_FAILURE;
+                }
+                else if ((transport_data->topic_StreamsResp = STRING_construct(TOPIC_DEVICE_STREAMS_RESP)) == NULL)
+                {
+                    LogError("Failure constructing Stream Response Topic");
+
+                    STRING_delete(transport_data->topic_StreamsPost);
+                    transport_data->topic_StreamsPost = NULL;
+
+                    transport_data->stream_request_callback = previous_callback;
+                    transport_data->stream_request_context = previous_context;
+                    
+                    // Codes_SRS_IOTHUB_TRANSPORT_MQTT_COMMON_09_048: [ If topic subscription fails, the function shall return a non-zero value (failure) ]
+                    result = MU_FAILURE;
+                }
+                else
+                {
+                    transport_data->topics_ToSubscribe |= SUBSCRIBE_STREAMS_POST_TOPIC;
+                    transport_data->topics_ToSubscribe |= SUBSCRIBE_STREAMS_RESP_TOPIC;
+                    changeStateToSubscribeIfAllowed(transport_data);
+                    // Codes_SRS_IOTHUB_TRANSPORT_MQTT_COMMON_09_049: [ If no errors occur, IoTHubTransport_MQTT_Common_SetStreamRequestCallback shall return zero (success) ]
+                    result = 0;
+                }
+            }
+        }
+        else
+        {
+            if (transport_data->topics_ToSubscribe & SUBSCRIBE_STREAMS_POST_TOPIC)
+            {
+                const char* unsubscribe[2];
+                unsubscribe[0] = STRING_c_str(transport_data->topic_StreamsPost);
+                unsubscribe[1] = STRING_c_str(transport_data->topic_StreamsResp);
+
+                if (mqtt_client_unsubscribe(transport_data->mqttClient, get_next_packet_id(transport_data), unsubscribe, 2) != 0)
+                {
+                    LogError("Failure calling mqtt_client_unsubscribe");
+                }
+
+                STRING_delete(transport_data->topic_StreamsPost);
+                transport_data->topic_StreamsPost = NULL;
+                STRING_delete(transport_data->topic_StreamsResp);
+                transport_data->topic_StreamsResp = NULL;
+
+                transport_data->topics_ToSubscribe &= ~SUBSCRIBE_STREAMS_POST_TOPIC;
+                transport_data->topics_ToSubscribe &= ~SUBSCRIBE_STREAMS_RESP_TOPIC;
+
+                transport_data->stream_request_callback = NULL;
+                transport_data->stream_request_context = NULL;
+            }
+
+            // Codes_SRS_IOTHUB_TRANSPORT_MQTT_COMMON_09_049: [ If no errors occur, IoTHubTransport_MQTT_Common_SetStreamRequestCallback shall return zero (success) ]
+            result = 0;
+        }
+    }
+
+    return result;
+}
+
+int IoTHubTransport_MQTT_Common_SendStreamResponse(IOTHUB_DEVICE_HANDLE handle, DEVICE_STREAM_C2D_RESPONSE* response)
+{
+    int result;
+
+    if (handle == NULL || response == NULL)
+    {
+        // Codes_SRS_IOTHUB_TRANSPORT_MQTT_COMMON_09_050: [ If `handle` or `response` are NULL, IoTHubTransport_MQTT_Common_SendStreamResponse shall return a non-zero value ]
+        LogError("Invalid parameter. handle=%p, response=%p", handle, response);
+        result = MU_FAILURE;
+    }
+    else
+    {
+        PMQTTTRANSPORT_HANDLE_DATA transport_data = (PMQTTTRANSPORT_HANDLE_DATA)handle;
+
+        // Codes_SRS_IOTHUB_TRANSPORT_MQTT_COMMON_09_051: [ A mqtt message shall be created and `response->data` be set as its body ]
+        // Codes_SRS_IOTHUB_TRANSPORT_MQTT_COMMON_09_053: [ The destination topic name shall be set to $iothub/streams/res/`result_code`/?$rid=`response->request_id` ]
+        // Codes_SRS_IOTHUB_TRANSPORT_MQTT_COMMON_09_054: [ If `response->accept` is TRUE, `response_code` shall be set as "200", otherwise it shall be "400" ]
+        // Codes_SRS_IOTHUB_TRANSPORT_MQTT_COMMON_09_055: [ If `response->content_type` is not NULL, "$ct=" shall be appended to the topic name followed by the url-encoded value of `response->content_type` ]
+        // Codes_SRS_IOTHUB_TRANSPORT_MQTT_COMMON_09_056: [ If `response->content_encoding` is not NULL, "$ce=" shall be appended to the topic name followed by the url-encoded value of `response->content_encoding` ]
+        // Codes_SRS_IOTHUB_TRANSPORT_MQTT_COMMON_09_057: [ The mqtt message shall be published to the destination topic ]
+        if (publish_device_stream_response(transport_data, response) != 0)
+        {
+            LogError("Failed publishing MQTT message with stream response");
+            // Codes_SRS_IOTHUB_TRANSPORT_MQTT_COMMON_09_052: [ If the mqtt message fails to be created, IoTHubTransport_MQTT_Common_SendStreamResponse shall fail and return a non-zero value ]
+            // Codes_SRS_IOTHUB_TRANSPORT_MQTT_COMMON_09_058: [ If publishing fails, the function shall fail and return a non-zero value ]
+            result = MU_FAILURE;
+        }
+        else
+        {
+            // Codes_SRS_IOTHUB_TRANSPORT_MQTT_COMMON_09_059: [ If no errors occur, IoTHubTransport_MQTT_Common_SendStreamResponse shall return zero ]
+            result = 0;
+        }
+    }
+
+    return result;
 }
 
 int IoTHubTransport_MQTT_SetCallbackContext(TRANSPORT_LL_HANDLE handle, void* ctx)
