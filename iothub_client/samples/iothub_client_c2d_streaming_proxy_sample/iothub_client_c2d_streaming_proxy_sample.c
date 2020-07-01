@@ -67,7 +67,7 @@ MU_DEFINE_ENUM_STRINGS(IO_SEND_RESULT, IO_SEND_RESULT_VALUES)
 MU_DEFINE_ENUM_STRINGS(IO_OPEN_RESULT, IO_OPEN_RESULT_VALUES)
 
 /* Paste in the your iothub connection string  */
-static const char* connectionString = "[device connection string]";
+static const char* connectionString = "HostName=TestUnitsIotHub.azure-devices.net;DeviceId=MyDevice;SharedAccessKey=toCsMaa8f4JIcWPN9dQYWTy3a1VnJhR7az33ObjH4ag=";
 static const char* localHost = "127.0.0.1"; // Address of the local server to connect to.
 static const int localPort = 22; // Port of the local server to connect to.
 
