@@ -225,7 +225,7 @@ set(original_skip_samples ${skip_samples})
 
 set(run_e2e_tests OFF)
 set(run_unittests OFF)
-#set(skip_samples ON)
+set(skip_samples ON)
 set(use_cppunittest ON)
 
 if (NOT ${use_installed_dependencies})
@@ -385,8 +385,6 @@ add_subdirectory(serializer)
 if (NOT ${skip_samples})
   add_subdirectory(samples/solutions)
 endif()
-# Added by MEEEEEEE
-add_subdirectory(iothub_client/samples/iothub_client_c2d_streaming_proxy_sample)
 
 # add the device_auth sample subdirectory
 if (${use_prov_client} AND NOT ${skip_samples})
